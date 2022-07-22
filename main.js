@@ -6,6 +6,7 @@ const express = require('express')
 const app = express()
 const expressWS = require('express-ws')(app)
 const colors = require('colors');
+const fs = require('fs')
 const expressWs = require('express-ws')
 const PORT = 8949
 
@@ -26,68 +27,39 @@ app.get('/door/:doorID', async (req, res) => {
   res.send(door)
 })
 
-app.post('/door/:doorID/lock', async (req, res) => {
-  if (!req.body || !req.body.code) {
-    res.status(404).end()
+app.post('/lockdown', async (req, res) => {
+  if (!req.body || !req.body.code || req.body.active == undefined || req.body.active == null) {
+    res.status(304).end()
     return
   }
 
-  const doorID = parseInt(req.params.doorID)
-
-  const door = await prisma.door.findUnique({
-    where: {id: doorID}
-  })
-
-  if (!door || req.body.code != process.env.ADMINCODE) {
-    res.status(404).end()
+  if (req.body.code != process.env.ADMINCODE) {
+    res.status(304).end()
     return
   }
 
-  if (door.isLocked) {res.end(); return}
+  if (req.body.active) {
+    if (!fs.existsSync('.LOCKDOWN')) fs.writeFileSync('.LOCKDOWN', '')
+  } else {
+    if (fs.existsSync('.LOCKDOWN')) fs.rmSync('.LOCKDOWN')
+  }
 
-  await prisma.door.update({
-    where: {id: doorID},
-    data: {isLocked: true}
-  })
+  expressWS.getWss().clients.forEach(async (client) => {
+    if (req.body.active) {
+      client.send(JSON.stringify({
+        type: 'update',
+        isOpen: false
+      }))
+      return
+    }
+    
+    let door = await prisma.door.findUnique({
+      where: {id: client.id}
+    })
 
-  expressWS.getWss().clients.forEach((client) => {
     client.send(JSON.stringify({
-      type: 'isLocked:UPDATE',
-      isLocked: true
-    }))
-  })
-
-  res.end()
-})
-
-app.post('/door/:doorID/unlock', async (req, res) => {
-  if (!req.body || !req.body.code) {
-    res.status(404).end()
-    return
-  }
-
-  const doorID = parseInt(req.params.doorID)
-
-  const door = await prisma.door.findUnique({
-    where: {id: doorID}
-  })
-
-  if (!door || req.body.code != process.env.ADMINCODE) {
-    res.status(404).end()
-    return
-  }
-
-  if (!door.isLocked) {res.end(); return}
-
-  await prisma.door.update({
-    where: {id: doorID},
-    data: {isLocked: false}
-  })
-
-  expressWS.getWss().clients.forEach((client) => {
-    client.send(JSON.stringify({
-      type: 'isLocked:UPDATE',
-      isLocked: false
+      type: 'update',
+      isOpen: door.isOpen
     }))
   })
 
@@ -95,23 +67,23 @@ app.post('/door/:doorID/unlock', async (req, res) => {
 })
 
 app.post('/door/:doorID/open', async (req, res) => {
+  if (fs.existsSync('.LOCKDOWN')) {res.status(304).end()}
+
+  if (!req.body || !req.body.code) {
+    res.status(404).end()
+    return
+  }
+
   const doorID = parseInt(req.params.doorID)
 
   const door = await prisma.door.findUnique({
     where: {'id': doorID}
   })
 
-  if (!door) {
+  if (!door || req.body.code != process.env.ADMINCODE) {
     res.status(404).end()
     return
   }
-
-  if (door.isLocked) {
-    res.status(304).end()
-    return
-  }
-
-  if (door.isOpen) {res.end(); return}
 
   await prisma.door.update({
     where: {id: doorID},
@@ -119,33 +91,34 @@ app.post('/door/:doorID/open', async (req, res) => {
   })
 
   expressWS.getWss().clients.forEach((client) => {
-    client.send(JSON.stringify({
-      type: 'isOpen:UPDATE',
-      isOpen: true
-    }))
+    if (client.id == doorID) {
+      client.send(JSON.stringify({
+        type: 'update',
+        isOpen: true
+      }))
+    } 
   })
 
   res.end()
 })
 
 app.post('/door/:doorID/close', async (req, res) => {
+  if (fs.existsSync('.LOCKDOWN')) {res.status(304).end()}
+  if (!req.body || !req.body.code) {
+    res.status(404).end()
+    return
+  }
+
   const doorID = parseInt(req.params.doorID)
 
   const door = await prisma.door.findUnique({
     where: {'id': doorID}
   })
 
-  if (!door) {
+  if (!door || req.body.code != process.env.ADMINCODE) {
     res.status(404).end()
     return
   }
-
-  if (door.isLocked) {
-    res.status(304).end()
-    return
-  }
-
-  if (!door.isOpen) {res.end(); return}
 
   await prisma.door.update({
     where: {id: doorID},
@@ -153,10 +126,12 @@ app.post('/door/:doorID/close', async (req, res) => {
   })
 
   expressWS.getWss().clients.forEach((client) => {
-    client.send(JSON.stringify({
-      type: 'isOpen:UPDATE',
-      isOpen: false
-    }))
+    if (client.id == doorID) {
+      client.send(JSON.stringify({
+        type: 'update',
+        isOpen: false
+      }))
+    } 
   })
 
   res.end()
@@ -185,7 +160,22 @@ app.ws('/doorController', async (ws, req) => {
           return
         }
 
-        console.log(`[WS:IDENTIFIY] ${message.id}`.blue)
+        ws.id = message.id
+
+        console.log(`[WS] Identified D${message.id}`.blue)
+
+        if (fs.existsSync('.LOCKDOWN')) {
+          ws.send(JSON.stringify({
+            type: 'update',
+            isOpen: false
+          }))
+          break
+        }
+
+        ws.send(JSON.stringify({
+          type: 'update',
+          isOpen: door.isOpen
+        }))
         break
     }
   })

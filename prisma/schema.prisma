@@ -13,7 +13,6 @@ datasource db {
 model Door {
   id        Int     @id @default(autoincrement())
   isOpen    Boolean @default(false)
-  isLocked  Boolean @default(false)
   rooms     Room[]
 }
 
